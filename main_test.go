@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -50,8 +51,13 @@ func env(t *testing.T) (state, sent, path string) {
 
 func run(t *testing.T, bin, state, path string, args ...string) (string, error) {
 	t.Helper()
+	return runWith(t, bin, state, path, []string{"FIGLA_BACKEND=detach"}, args...)
+}
+
+func runWith(t *testing.T, bin, state, path string, extra []string, args ...string) (string, error) {
+	t.Helper()
 	c := exec.Command(bin, args...)
-	c.Env = append(os.Environ(), "FIGLA_STATE="+state, "PATH="+path)
+	c.Env = append(append(os.Environ(), "FIGLA_STATE="+state, "PATH="+path, "FIGLA_RETRY_BASE_MS=1"), extra...)
 	out, err := c.CombinedOutput()
 	return string(out), err
 }
@@ -276,4 +282,190 @@ func TestMessageDiscouragesPolling(t *testing.T) {
 			t.Fatalf("message missing %q:\n%s", want, m)
 		}
 	}
+}
+
+func writeRecord(t *testing.T, state string, r Reminder) {
+	t.Helper()
+	dir := filepath.Join(state, r.Aria)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(r)
+	if err := os.WriteFile(filepath.Join(dir, r.Name+".json"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func fakeFigaro(t *testing.T, path, script string) string {
+	t.Helper()
+	bindir := strings.SplitN(path, string(os.PathListSeparator), 2)[0]
+	p := filepath.Join(bindir, "figaro")
+	if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// Defends the 2026-10 incident: reminders whose carrier died (reboot, or a
+// relative timer re-anchored by daemon-reload) were silently lost. Catchup
+// must deliver them, and say they are late.
+func TestCatchupDeliversMissedReminder(t *testing.T) {
+	bin := build(t)
+	state, sent, path := env(t)
+	fig := filepath.Join(strings.SplitN(path, string(os.PathListSeparator), 2)[0], "figaro")
+	writeRecord(t, state, Reminder{
+		Name: "missed", Aria: "am", About: "the 03:35 sweep", Backend: "detach",
+		Created: time.Now().Add(-3 * time.Hour), FireAt: time.Now().Add(-time.Hour), Figaro: fig,
+	})
+	if out, err := run(t, bin, state, path, "catchup"); err != nil {
+		t.Fatalf("catchup: %v\n%s", err, out)
+	}
+	b, _ := os.ReadFile(sent)
+	if !strings.Contains(string(b), "the 03:35 sweep") || !strings.Contains(string(b), "LATE") {
+		t.Fatalf("missed reminder not delivered as late: %q", b)
+	}
+	if out, _ := run(t, bin, state, path, "list", "--aria", "am"); !strings.Contains(out, "no active reminders") {
+		t.Fatalf("delivered reminder still listed:\n%s", out)
+	}
+}
+
+// Catchup must leave reminders that are not yet due alone, or it would fire
+// everything early.
+func TestCatchupIgnoresFutureReminders(t *testing.T) {
+	bin := build(t)
+	state, sent, path := env(t)
+	fig := filepath.Join(strings.SplitN(path, string(os.PathListSeparator), 2)[0], "figaro")
+	writeRecord(t, state, Reminder{
+		Name: "later", Aria: "af", About: "not yet", Backend: "detach",
+		Created: time.Now(), FireAt: time.Now().Add(time.Hour), Figaro: fig,
+	})
+	run(t, bin, state, path, "catchup")
+	if b, _ := os.ReadFile(sent); strings.Contains(string(b), "not yet") {
+		t.Fatalf("catchup fired a future reminder: %q", b)
+	}
+}
+
+// 0.1.0 deleted the record before sending, so one failed send erased the
+// reminder without a trace. A failed send must leave it for the next catchup.
+func TestFailedSendKeepsReminder(t *testing.T) {
+	bin := build(t)
+	state, sent, path := env(t)
+	fig := fakeFigaro(t, path, "#!/bin/sh\necho down >&2\nexit 1\n")
+	writeRecord(t, state, Reminder{
+		Name: "flaky", Aria: "ax", About: "must survive", Backend: "detach",
+		Created: time.Now().Add(-time.Hour), FireAt: time.Now().Add(-time.Minute), Figaro: fig,
+	})
+	if _, err := run(t, bin, state, path, "catchup"); err == nil {
+		t.Fatal("catchup should report the failed send")
+	}
+	if _, err := os.Stat(filepath.Join(state, "ax", "flaky.json")); err != nil {
+		t.Fatalf("failed send destroyed the reminder: %v", err)
+	}
+	fakeFigaro(t, path, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> "+sent+"\n")
+	if out, err := run(t, bin, state, path, "catchup"); err != nil {
+		t.Fatalf("retry: %v\n%s", err, out)
+	}
+	if b, _ := os.ReadFile(sent); !strings.Contains(string(b), "must survive") {
+		t.Fatalf("retry did not deliver: %q", b)
+	}
+}
+
+// Re-arming a name must replace the old reminder, not orphan its carrier.
+func TestRearmSameNameReplaces(t *testing.T) {
+	bin := build(t)
+	state, _, path := env(t)
+	reap(t, bin, state, path, "ar")
+	run(t, bin, state, path, "arm", "--aria", "ar", "--in", "10m", "--about", "first", "--name", "n")
+	out, _ := run(t, bin, state, path, "list", "--aria", "ar", "--json")
+	var before []Reminder
+	_ = json.Unmarshal([]byte(out), &before)
+	run(t, bin, state, path, "arm", "--aria", "ar", "--in", "20m", "--about", "second", "--name", "n")
+	out, _ = run(t, bin, state, path, "list", "--aria", "ar", "--json")
+	var after []Reminder
+	_ = json.Unmarshal([]byte(out), &after)
+	if len(after) != 1 || after[0].About != "second" {
+		t.Fatalf("re-arm did not replace: %s", out)
+	}
+	if len(before) == 1 && before[0].PID > 0 {
+		time.Sleep(200 * time.Millisecond)
+		if err := exec.Command("kill", "-0", fmt.Sprint(before[0].PID)).Run(); err == nil {
+			t.Fatalf("old carrier %d still alive after re-arm", before[0].PID)
+		}
+	}
+}
+
+func systemdReachable() bool {
+	out, err := exec.Command("systemctl", "--user", "show", "--property=Version").CombinedOutput()
+	return err == nil && strings.Contains(string(out), "Version=")
+}
+
+func userUnitDir() string {
+	if d := os.Getenv("XDG_CONFIG_HOME"); d != "" {
+		return filepath.Join(d, "systemd", "user")
+	}
+	h, _ := os.UserHomeDir()
+	return filepath.Join(h, ".config", "systemd", "user")
+}
+
+// Defends the 2026-10 incident at its root: a relative (--on-active) timer is
+// re-anchored by every daemon-reload and does not survive a reboot. The
+// systemd carrier must be a calendar timer on disk, enabled under
+// timers.target, and must deliver through the registry it was armed against.
+func TestSystemdCarrierIsDurableAndDelivers(t *testing.T) {
+	if !systemdReachable() {
+		t.Skip("no systemd user manager")
+	}
+	bin := build(t)
+	state, sent, path := env(t)
+	aria := fmt.Sprintf("figlatest%d", time.Now().UnixNano())
+	sys := []string{"FIGLA_BACKEND=systemd"}
+	t.Cleanup(func() {
+		runWith(t, bin, state, path, sys, "cancel", "--aria", aria, "--all")
+		services, _ := filepath.Glob(filepath.Join(userUnitDir(), "figla-catchup-*.service"))
+		for _, svc := range services {
+			if b, _ := os.ReadFile(svc); !strings.Contains(string(b), state) {
+				continue
+			}
+			base := strings.TrimSuffix(filepath.Base(svc), ".service")
+			exec.Command("systemctl", "--user", "stop", base+".timer", base+".service").Run()
+			os.Remove(filepath.Join(userUnitDir(), "timers.target.wants", base+".timer"))
+			os.Remove(filepath.Join(userUnitDir(), base+".timer"))
+			os.Remove(svc)
+		}
+	})
+	if out, err := runWith(t, bin, state, path, sys, "arm", "--aria", aria, "--in", "3s",
+		"--about", "durable", "--name", "d"); err != nil {
+		t.Fatalf("arm: %v\n%s", err, out)
+	}
+	b, err := os.ReadFile(filepath.Join(state, aria, "d.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r Reminder
+	_ = json.Unmarshal(b, &r)
+	if r.Backend != "systemd" {
+		t.Fatalf("expected systemd carrier, got %q", r.Backend)
+	}
+	timer, err := os.ReadFile(filepath.Join(userUnitDir(), r.Unit+".timer"))
+	if err != nil {
+		t.Fatalf("no timer unit on disk: %v", err)
+	}
+	if !strings.Contains(string(timer), "OnCalendar=") || strings.Contains(string(timer), "OnActive") {
+		t.Fatalf("timer is not wall-clock anchored:\n%s", timer)
+	}
+	if _, err := os.Lstat(filepath.Join(userUnitDir(), "timers.target.wants", r.Unit+".timer")); err != nil {
+		t.Fatalf("timer not enabled for reboot: %v", err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(sent); err == nil && strings.Contains(string(b), "durable") {
+			time.Sleep(time.Second)
+			if _, err := os.Stat(filepath.Join(userUnitDir(), r.Unit+".timer")); err == nil {
+				t.Fatal("fired reminder left its timer unit on disk")
+			}
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Fatal("systemd carrier never delivered")
 }

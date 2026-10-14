@@ -1,18 +1,3 @@
-// Command figla arms fire-and-forget reminders that message a figaro aria.
-//
-// Figaro sings "Figaro là" — over there. A reminder is figaro calling to
-// himself from a little further along in time.
-//
-// WHY THIS EXISTS. An agent supervising background work has two bad habits:
-// polling in a loop (which burns turns and context) and spawning ad-hoc
-// `sleep && …` shells (which orphan, leak memory and cannot be listed). figla
-// replaces both. Arm a reminder, forget it, get a message if the work is late,
-// cancel it if the work reports first.
-//
-// PORTABILITY. Uses transient systemd user timers when a user bus is actually
-// reachable, and a detached child process everywhere else — Windows, macOS,
-// containers, and Linux boxes whose user bus is missing. The state directory is
-// the registry either way, so `list` and `cancel` behave identically.
 package main
 
 import (
@@ -26,13 +11,15 @@ import (
 	"time"
 )
 
+const version = "0.2.0"
+
 const usage = `figla — fire-and-forget reminders for a figaro aria
 
 USAGE
   figla arm --aria <id> --in <dur> --about <text> [--watch <cmd>] [--name <n>]
   figla list [--aria <id>] [--json]
   figla cancel <name> | --aria <id> --all
-  figla sweep
+  figla catchup
   figla version
 
 ARM
@@ -44,6 +31,18 @@ ARM
                    included, so the reminder carries state instead of asking
                    you to go find it. Bounded: 10s, 2KB.
   --name   <n>     stable handle (default: derived from --about)
+
+DURABILITY
+  With a reachable systemd user manager, each reminder is a calendar timer
+  in ~/.config/systemd/user, anchored to wall-clock time. It survives
+  reboots, daemon-reloads and suspend. figla-catchup.timer runs a minute
+  after boot and every ten minutes, delivering anything that came due while
+  its carrier was gone and retrying any failed send. Reminders delivered
+  late say by how much.
+
+CATCHUP
+  Deliver every reminder more than 30s overdue. Run automatically by
+  figla-catchup.timer; safe to run by hand.
 
 EXAMPLES
   figla arm --aria 86296c96 --in 25m --about "FX: footer + exit hang" \
@@ -65,14 +64,14 @@ func main() {
 		err = cmdList(os.Args[2:])
 	case "cancel", "rm":
 		err = cmdCancel(os.Args[2:])
-	case "sweep":
-		err = cmdSweep()
+	case "catchup", "sweep":
+		err = cmdCatchup()
 	case "fire": // internal: deliver now
 		err = cmdFire(os.Args[2:])
 	case "wait": // internal: sleep then deliver (detach backend)
 		err = cmdWait(os.Args[2:])
 	case "version", "--version", "-v":
-		fmt.Println("figla 0.1.0")
+		fmt.Println("figla " + version)
 	case "help", "--help", "-h":
 		fmt.Print(usage)
 	default:
@@ -112,41 +111,56 @@ func flags(args []string) (map[string]string, []string) {
 
 func cmdArm(args []string) error {
 	f, _ := flags(args)
-	aria, about, in := f["aria"], f["about"], f["in"]
-	if aria == "" || in == "" || about == "" {
+	aria, about := f["aria"], f["about"]
+	if aria == "" || about == "" || f["in"] == "" {
 		return errors.New("arm needs --aria, --in and --about")
 	}
-	d, err := time.ParseDuration(in)
+	fireAt, err := deadline(f["in"], time.Now())
 	if err != nil {
-		return fmt.Errorf("bad --in %q: %w", in, err)
-	}
-	if d <= 0 {
-		return fmt.Errorf("--in must be positive, got %s", d)
+		return err
 	}
 	name := f["name"]
 	if name == "" {
 		name = slug(about)
 	}
-	// Resolve figaro NOW, not at fire time. A detached child or a systemd unit
-	// inherits a minimal environment, and "figaro: not found" an hour later is
-	// a silent failure of the exact thing meant to catch silent failures.
 	fig, err := exec.LookPath("figaro")
 	if err != nil {
 		return fmt.Errorf("cannot find figaro on PATH: %w", err)
 	}
+	if old, err := find(aria, name); err == nil {
+		disarm(old)
+		_ = old.remove()
+	}
 	r := &Reminder{
 		Name: name, Aria: aria, About: about, Watch: f["watch"],
-		Created: time.Now(), FireAt: time.Now().Add(d), Figaro: fig,
-	}
-	if err := arm(r); err != nil {
-		return err
+		Created: time.Now(), FireAt: fireAt, Figaro: fig,
 	}
 	if err := r.save(); err != nil {
 		return err
 	}
-	fmt.Printf("armed %s/%s via %s, fires in %s (%s)\n",
-		aria, name, r.Backend, d, r.FireAt.Format("15:04:05"))
+	if err := arm(r); err != nil {
+		_ = r.remove()
+		return err
+	}
+	if err := r.save(); err != nil {
+		disarm(r)
+		_ = r.remove()
+		return err
+	}
+	fmt.Printf("armed %s/%s via %s, fires %s (in %s)\n",
+		aria, name, r.Backend, r.FireAt.Format("Mon 15:04:05 MST"), time.Until(r.FireAt).Round(time.Second))
 	return nil
+}
+
+func deadline(in string, now time.Time) (time.Time, error) {
+	d, err := time.ParseDuration(in)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("bad --in %q: %w", in, err)
+	}
+	if d <= 0 {
+		return time.Time{}, fmt.Errorf("--in must be positive, got %s", d)
+	}
+	return now.Add(d).Round(0), nil
 }
 
 func cmdList(args []string) error {
@@ -155,28 +169,25 @@ func cmdList(args []string) error {
 	if err != nil {
 		return err
 	}
-	// Sweeping on read keeps the registry honest without a background process:
-	// a reminder whose carrier is gone is not pending, it is dead.
-	live := rs[:0]
-	for _, r := range rs {
-		if !alive(r) {
-			_ = r.remove()
-			continue
-		}
-		live = append(live, r)
-	}
-	sort.Slice(live, func(i, j int) bool { return live[i].FireAt.Before(live[j].FireAt) })
+	sort.Slice(rs, func(i, j int) bool { return rs[i].FireAt.Before(rs[j].FireAt) })
 	if f["json"] == "true" {
-		return json.NewEncoder(os.Stdout).Encode(live)
+		if rs == nil {
+			rs = []*Reminder{}
+		}
+		return json.NewEncoder(os.Stdout).Encode(rs)
 	}
-	if len(live) == 0 {
+	if len(rs) == 0 {
 		fmt.Println("no active reminders")
 		return nil
 	}
-	fmt.Printf("%-10s %-22s %-9s %-8s %s\n", "ARIA", "NAME", "IN", "VIA", "ABOUT")
-	for _, r := range live {
-		fmt.Printf("%-10s %-22s %-9s %-8s %s\n",
-			r.Aria, trunc(r.Name, 22), until(r.FireAt), r.Backend, trunc(r.About, 40))
+	fmt.Printf("%-10s %-22s %-11s %-8s %s\n", "ARIA", "NAME", "IN", "VIA", "ABOUT")
+	for _, r := range rs {
+		via := r.Backend
+		if !pending(r) {
+			via += "!"
+		}
+		fmt.Printf("%-10s %-22s %-11s %-8s %s\n",
+			r.Aria, trunc(r.Name, 22), until(r.FireAt), via, trunc(r.About, 40))
 	}
 	return nil
 }
@@ -221,22 +232,6 @@ func cmdCancel(args []string) error {
 	return nil
 }
 
-func cmdSweep() error {
-	rs, err := load("")
-	if err != nil {
-		return err
-	}
-	n := 0
-	for _, r := range rs {
-		if !alive(r) {
-			_ = r.remove()
-			n++
-		}
-	}
-	fmt.Printf("swept %d dead reminder(s)\n", n)
-	return nil
-}
-
 func trunc(s string, n int) string {
 	if len(s) <= n {
 		return s
@@ -247,7 +242,7 @@ func trunc(s string, n int) string {
 func until(t time.Time) string {
 	d := time.Until(t).Round(time.Second)
 	if d < 0 {
-		return "due"
+		return "overdue"
 	}
 	return d.String()
 }

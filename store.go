@@ -27,9 +27,9 @@ type Reminder struct {
 	// is how a reminder silently fails to remind.
 	Figaro string `json:"figaro"`
 
-	Backend string `json:"backend"`        // "systemd" | "detach"
-	Unit    string `json:"unit,omitempty"` // systemd transient unit
-	PID     int    `json:"pid,omitempty"`  // detached child
+	Backend string `json:"backend"`
+	Unit    string `json:"unit,omitempty"`
+	PID     int    `json:"pid,omitempty"`
 }
 
 // stateDir is the registry root. FIGLA_STATE overrides it, which is what the
@@ -120,7 +120,12 @@ func safe(s string) string {
 func (r *Reminder) message(watchOut string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "REMINDER (figla) — %s\n", r.About)
-	fmt.Fprintf(&b, "armed %s ago; due now.\n", time.Since(r.Created).Round(time.Second))
+	fmt.Fprintf(&b, "armed %s ago for %s; ", time.Since(r.Created).Round(time.Second), r.FireAt.Format("Mon 15:04 MST"))
+	if late := time.Since(r.FireAt); late > lateAfter {
+		fmt.Fprintf(&b, "delivered LATE by %s (carrier was gone; caught up).\n", late.Round(time.Minute))
+	} else {
+		b.WriteString("due now.\n")
+	}
 	if strings.TrimSpace(watchOut) != "" {
 		fmt.Fprintf(&b, "\n--watch %s\n%s\n", r.Watch, strings.TrimRight(watchOut, "\n"))
 	}
