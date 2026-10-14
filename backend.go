@@ -13,7 +13,10 @@ import (
 	"time"
 )
 
-const lateAfter = 30 * time.Second
+const (
+	lateAfter   = 30 * time.Second
+	giveUpAfter = 24 * time.Hour
+)
 
 func arm(r *Reminder) error {
 	if backendAllowed("systemd") && systemdUsable() {
@@ -58,8 +61,11 @@ func retire(r *Reminder) {
 func pending(r *Reminder) bool {
 	switch r.Backend {
 	case "systemd":
-		_, err := os.Stat(filepath.Join(unitDir(), r.Unit+".timer"))
-		return err == nil
+		if _, err := os.Stat(filepath.Join(unitDir(), r.Unit+".timer")); err == nil {
+			return true
+		}
+		out, _ := exec.Command("systemctl", "--user", "is-active", r.Unit+".timer").Output()
+		return strings.TrimSpace(string(out)) == "active"
 	case "detach":
 		return pidAlive(r.PID)
 	}
@@ -292,18 +298,24 @@ func cmdCatchup() error {
 	}
 	reclaimStale()
 	var failed []string
-	n := 0
 	for _, r := range rs {
-		if time.Since(r.FireAt) < lateAfter {
+		late := time.Since(r.FireAt)
+		if late < lateAfter {
 			continue
 		}
+		id := r.Aria + "/" + r.Name
 		if err := deliver(r); err != nil {
-			failed = append(failed, r.Aria+"/"+r.Name+": "+err.Error())
+			if late > giveUpAfter {
+				disarm(r)
+				_ = r.remove()
+				fmt.Printf("dropped %s: undeliverable for %s: %v\n", id, late.Round(time.Minute), err)
+				continue
+			}
+			failed = append(failed, id+": "+err.Error())
 			continue
 		}
-		n++
+		fmt.Printf("delivered %s, late by %s\n", id, late.Round(time.Second))
 	}
-	fmt.Printf("delivered %d overdue reminder(s)\n", n)
 	if len(failed) > 0 {
 		return errors.New("could not deliver:\n  " + strings.Join(failed, "\n  "))
 	}

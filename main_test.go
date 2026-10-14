@@ -492,3 +492,25 @@ func TestSystemdCarrierIsDurableAndDelivers(t *testing.T) {
 	}
 	t.Fatal("systemd carrier never delivered")
 }
+
+// A reminder for an aria that no longer exists must not be retried every ten
+// minutes forever.
+func TestCatchupGivesUpOnDayOldUndeliverable(t *testing.T) {
+	bin := build(t)
+	state, _, path := env(t)
+	fig := fakeFigaro(t, path, "#!/bin/sh\nexit 1\n")
+	writeRecord(t, state, Reminder{
+		Name: "ghost", Aria: "ag", About: "dead aria", Backend: "detach",
+		Created: time.Now().Add(-72 * time.Hour), FireAt: time.Now().Add(-48 * time.Hour), Figaro: fig,
+	})
+	out, err := run(t, bin, state, path, "catchup")
+	if err != nil {
+		t.Fatalf("a dropped reminder is not a failure: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "dropped ag/ghost") {
+		t.Fatalf("drop not reported:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(state, "ag", "ghost.json")); err == nil {
+		t.Fatal("day-old undeliverable reminder was kept")
+	}
+}

@@ -98,6 +98,8 @@ its carrier, and the message says it was delivered **LATE** and by how much.
 **Delivery is claimed, not deleted.** The record is renamed to `.json.firing`
 while it sends, so a timer and a catchup cannot both deliver it. Five attempts
 with backoff; if all fail, the record goes back and the next catchup retries.
+A reminder still undeliverable a day past due (its aria is gone) is dropped,
+and catchup says so in its journal.
 A reminder is only removed once it has actually been sent.
 
 `list` shows overdue reminders as `overdue`, and marks a reminder whose carrier

@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const version = "0.2.0"
+const version = "0.2.1"
 
 const usage = `figla — fire-and-forget reminders for a figaro aria
 
