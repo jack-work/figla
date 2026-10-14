@@ -21,13 +21,16 @@ daemons and tripped a memory-pressure alert doing exactly that.
 ## The whole surface
 
 ```bash
-figla arm --aria <id> --in <dur> --about <text> [--watch <cmd>] [--name <n>]
+figla arm --aria <id> (--in <dur> | --at <time>) --about <text> [--watch <cmd>] [--name <n>]
 figla list [--aria <id>] [--json]
 figla cancel <name> | --aria <id> --all
 figla catchup
 ```
 
 `--in` takes a Go duration: `90s`, `25m`, `1h30m`.
+`--at` takes local wall-clock time, `"2026-10-18 08:55"`, or RFC 3339. Use it
+for anything tied to the calendar (a kickoff, a deadline, a nightly job):
+computing `--in` by hand from the current time is arithmetic you can get wrong.
 
 Re-arming an existing `--name` replaces it.
 

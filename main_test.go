@@ -203,6 +203,9 @@ func TestArmValidation(t *testing.T) {
 		{"arm", "--in", "5m", "--about", "y"},                      // no --aria
 		{"arm", "--aria", "x", "--in", "nonsense", "--about", "y"}, // bad duration
 		{"arm", "--aria", "x", "--in", "-5m", "--about", "y"},      // past
+		{"arm", "--aria", "x", "--at", "2001-01-01 00:00", "--about", "y"},
+		{"arm", "--aria", "x", "--at", "tomorrow-ish", "--about", "y"},
+		{"arm", "--aria", "x", "--in", "5m", "--at", "2099-01-01 00:00", "--about", "y"},
 	} {
 		if out, err := run(t, bin, state, path, c...); err == nil {
 			t.Fatalf("%v should have failed, got:\n%s", c, out)
@@ -367,6 +370,26 @@ func TestFailedSendKeepsReminder(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(sent); !strings.Contains(string(b), "must survive") {
 		t.Fatalf("retry did not deliver: %q", b)
+	}
+}
+
+func TestAtSetsWallClockDeadline(t *testing.T) {
+	bin := build(t)
+	state, _, path := env(t)
+	reap(t, bin, state, path, "aa")
+	want := time.Now().Add(48 * time.Hour).Truncate(time.Minute)
+	if out, err := run(t, bin, state, path, "arm", "--aria", "aa", "--at", want.Format("2006-01-02 15:04"),
+		"--about", "kickoff", "--name", "k"); err != nil {
+		t.Fatalf("arm --at: %v\n%s", err, out)
+	}
+	b, err := os.ReadFile(filepath.Join(state, "aa", "k.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r Reminder
+	_ = json.Unmarshal(b, &r)
+	if !r.FireAt.Equal(want) {
+		t.Fatalf("fire_at %s, want %s", r.FireAt, want)
 	}
 }
 

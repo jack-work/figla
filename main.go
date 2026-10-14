@@ -16,7 +16,7 @@ const version = "0.2.0"
 const usage = `figla — fire-and-forget reminders for a figaro aria
 
 USAGE
-  figla arm --aria <id> --in <dur> --about <text> [--watch <cmd>] [--name <n>]
+  figla arm --aria <id> (--in <dur> | --at <time>) --about <text> [--watch <cmd>] [--name <n>]
   figla list [--aria <id>] [--json]
   figla cancel <name> | --aria <id> --all
   figla catchup
@@ -26,6 +26,8 @@ ARM
   --aria   <id>    aria to message when it fires (required; reminders are
                    scoped to an aria and every other verb filters by it)
   --in     <dur>   Go duration: 90s, 25m, 1h30m
+  --at     <time>  wall-clock deadline, local time: "2026-10-18 08:55",
+                   "2026-10-18 08:55:30", or RFC 3339
   --about  <text>  what you are waiting on — written to be actionable later
   --watch  <cmd>   optional shell command run AT FIRE TIME; its output is
                    included, so the reminder carries state instead of asking
@@ -112,10 +114,10 @@ func flags(args []string) (map[string]string, []string) {
 func cmdArm(args []string) error {
 	f, _ := flags(args)
 	aria, about := f["aria"], f["about"]
-	if aria == "" || about == "" || f["in"] == "" {
-		return errors.New("arm needs --aria, --in and --about")
+	if aria == "" || about == "" || (f["in"] == "") == (f["at"] == "") {
+		return errors.New("arm needs --aria, --about, and exactly one of --in or --at")
 	}
-	fireAt, err := deadline(f["in"], time.Now())
+	fireAt, err := deadline(f["in"], f["at"], time.Now())
 	if err != nil {
 		return err
 	}
@@ -152,15 +154,33 @@ func cmdArm(args []string) error {
 	return nil
 }
 
-func deadline(in string, now time.Time) (time.Time, error) {
-	d, err := time.ParseDuration(in)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("bad --in %q: %w", in, err)
+func deadline(in, at string, now time.Time) (time.Time, error) {
+	if in != "" {
+		d, err := time.ParseDuration(in)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("bad --in %q: %w", in, err)
+		}
+		if d <= 0 {
+			return time.Time{}, fmt.Errorf("--in must be positive, got %s", d)
+		}
+		return now.Add(d).Round(0), nil
 	}
-	if d <= 0 {
-		return time.Time{}, fmt.Errorf("--in must be positive, got %s", d)
+	for _, layout := range []string{"2006-01-02 15:04", "2006-01-02 15:04:05"} {
+		if t, err := time.ParseInLocation(layout, at, time.Local); err == nil {
+			return future(t, now)
+		}
 	}
-	return now.Add(d).Round(0), nil
+	if t, err := time.Parse(time.RFC3339, at); err == nil {
+		return future(t, now)
+	}
+	return time.Time{}, fmt.Errorf("bad --at %q: want \"2006-01-02 15:04\" or RFC 3339", at)
+}
+
+func future(t, now time.Time) (time.Time, error) {
+	if !t.After(now) {
+		return time.Time{}, fmt.Errorf("--at %s is not in the future", t.Format(time.RFC3339))
+	}
+	return t, nil
 }
 
 func cmdList(args []string) error {
