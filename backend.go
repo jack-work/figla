@@ -336,6 +336,8 @@ func reclaimStale() {
 
 func deliver(r *Reminder) error {
 	claimed := r.path() + ".firing"
+	now := time.Now()
+	_ = os.Chtimes(r.path(), now, now)
 	if err := os.Rename(r.path(), claimed); err != nil {
 		return nil
 	}

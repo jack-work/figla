@@ -514,3 +514,39 @@ func TestCatchupGivesUpOnDayOldUndeliverable(t *testing.T) {
 		t.Fatal("day-old undeliverable reminder was kept")
 	}
 }
+
+// Defends the 2026-10-14 23:00 double delivery: a reminder and the catchup
+// timer started in the same second. The claim rename kept the record's
+// arm-time mtime, so catchup judged the fresh claim stale, restored it
+// mid-send, and the next catchup delivered it a second time.
+func TestConcurrentCatchupDoesNotStealAFreshClaim(t *testing.T) {
+	bin := build(t)
+	state, sent, path := env(t)
+	fig := fakeFigaro(t, path, "#!/bin/sh\nsleep 2\nprintf '%s\\n' \"$*\" >> "+sent+"\n")
+	writeRecord(t, state, Reminder{
+		Name: "once", Aria: "ao", About: "exactly once", Backend: "detach",
+		Created: time.Now().Add(-8 * time.Hour), FireAt: time.Now(), Figaro: fig,
+	})
+	rec := filepath.Join(state, "ao", "once.json")
+	old := time.Now().Add(-8 * time.Hour)
+	if err := os.Chtimes(rec, old, old); err != nil {
+		t.Fatal(err)
+	}
+	fire := exec.Command(bin, "fire", "--aria", "ao", "--name", "once")
+	fire.Env = append(os.Environ(), "FIGLA_STATE="+state, "PATH="+path)
+	if err := fire.Start(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	run(t, bin, state, path, "catchup")
+	if err := fire.Wait(); err != nil {
+		t.Fatalf("fire: %v", err)
+	}
+	if _, err := os.Stat(rec); err == nil {
+		t.Fatal("record survived a successful delivery; the next catchup would send it again")
+	}
+	b, _ := os.ReadFile(sent)
+	if n := strings.Count(string(b), "exactly once"); n != 1 {
+		t.Fatalf("delivered %d times", n)
+	}
+}
