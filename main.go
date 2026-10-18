@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const version = "0.2.2"
+const version = "0.2.3"
 
 const usage = `figla — fire-and-forget reminders for a figaro aria
 
@@ -121,6 +121,10 @@ func cmdArm(args []string) error {
 	if err != nil {
 		return err
 	}
+	aria, err = canonicalAria(aria)
+	if err != nil {
+		return err
+	}
 	name := f["name"]
 	if name == "" {
 		name = slug(about)
@@ -185,7 +189,7 @@ func future(t, now time.Time) (time.Time, error) {
 
 func cmdList(args []string) error {
 	f, _ := flags(args)
-	rs, err := load(f["aria"])
+	rs, err := loadAria(f["aria"])
 	if err != nil {
 		return err
 	}
@@ -218,7 +222,7 @@ func cmdCancel(args []string) error {
 		if f["aria"] == "" {
 			return errors.New("cancel --all needs --aria (reminders are aria-scoped)")
 		}
-		rs, err := load(f["aria"])
+		rs, err := loadAria(f["aria"])
 		if err != nil {
 			return err
 		}
@@ -232,7 +236,7 @@ func cmdCancel(args []string) error {
 	if len(rest) == 0 {
 		return errors.New("cancel needs a name, or --aria <id> --all")
 	}
-	rs, err := load(f["aria"])
+	rs, err := loadAria(f["aria"])
 	if err != nil {
 		return err
 	}
