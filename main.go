@@ -11,12 +11,13 @@ import (
 	"time"
 )
 
-const version = "0.2.3"
+const version = "0.3.0"
 
 const usage = `figla — fire-and-forget reminders for a figaro aria
 
 USAGE
   figla arm --aria <id> (--in <dur> | --at <time>) --about <text> [--watch <cmd>] [--name <n>]
+  figla run --aria <id> [--about <text>] [--watch <cmd>] [--name <n>] -- <command...>
   figla list [--aria <id>] [--json]
   figla cancel <name> | --aria <id> --all
   figla catchup
@@ -34,6 +35,14 @@ ARM
                    you to go find it. Bounded: 10s, 2KB.
   --name   <n>     stable handle (default: derived from --about)
 
+RUN
+  Start <command> now, detached, through the shell in the current directory
+  and environment, and message the aria the moment it exits: exit status,
+  duration, and the last 2KB of output (stdout and stderr, in full at
+  $FIGLA_STATE/<aria>/<name>.log). Returns at once. --about defaults to the
+  command. cancel kills the command's process group and sends nothing.
+  A run does not survive a reboot; catchup reports it as lost.
+
 DURABILITY
   With a reachable systemd user manager, each reminder is a calendar timer
   in ~/.config/systemd/user, anchored to wall-clock time. It survives
@@ -49,6 +58,7 @@ CATCHUP
 EXAMPLES
   figla arm --aria 86296c96 --in 25m --about "FX: footer + exit hang" \
         --watch "git -C /home/gluck/dev/figaro-qua/fx log --oneline -1"
+  figla run --aria 86296c96 --about "full test suite" -- go test ./...
   figla list --aria 86296c96
   figla cancel --aria 86296c96 --all
 `
@@ -70,6 +80,10 @@ func main() {
 		err = cmdCatchup()
 	case "fire": // internal: deliver now
 		err = cmdFire(os.Args[2:])
+	case "run":
+		err = cmdRun(os.Args[2:])
+	case "runner": // internal: run the command, then deliver (run)
+		err = cmdRunner(os.Args[2:])
 	case "wait": // internal: sleep then deliver (detach backend)
 		err = cmdWait(os.Args[2:])
 	case "version", "--version", "-v":
@@ -210,8 +224,12 @@ func cmdList(args []string) error {
 		if !pending(r) {
 			via += "!"
 		}
+		when := until(r.FireAt)
+		if r.Backend == "run" {
+			when = "ran " + time.Since(r.Created).Round(time.Second).String()
+		}
 		fmt.Printf("%-10s %-22s %-11s %-8s %s\n",
-			r.Aria, trunc(r.Name, 22), until(r.FireAt), via, trunc(r.About, 40))
+			r.Aria, trunc(r.Name, 22), when, via, trunc(r.About, 40))
 	}
 	return nil
 }

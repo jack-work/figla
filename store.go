@@ -22,6 +22,12 @@ type Reminder struct {
 	Created time.Time `json:"created"`
 	FireAt  time.Time `json:"fire_at"`
 
+	Run  string `json:"run,omitempty"`
+	Dir  string `json:"dir,omitempty"`
+	Log  string `json:"log,omitempty"`
+	Exit string `json:"exit,omitempty"`
+	Took string `json:"took,omitempty"`
+
 	// Figaro is resolved at ARM time. A detached child inherits a minimal
 	// environment and a systemd unit gets almost none, so looking it up later
 	// is how a reminder silently fails to remind.

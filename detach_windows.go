@@ -43,5 +43,7 @@ func killPID(pid int) {
 	}
 }
 
+func killGroup(pid int) { killPID(pid) }
+
 func shell() string     { return "cmd" }
 func shellFlag() string { return "/c" }

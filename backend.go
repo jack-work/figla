@@ -47,6 +47,9 @@ func disarm(r *Reminder) {
 		removeUnitFiles(r.Unit)
 	case "detach":
 		killPID(r.PID)
+	case "run":
+		killGroup(r.PID)
+		_ = os.Remove(r.Log)
 	}
 }
 
@@ -66,7 +69,7 @@ func pending(r *Reminder) bool {
 		}
 		out, _ := exec.Command("systemctl", "--user", "is-active", r.Unit+".timer").Output()
 		return strings.TrimSpace(string(out)) == "active"
-	case "detach":
+	case "detach", "run":
 		return pidAlive(r.PID)
 	}
 	return false
@@ -299,7 +302,13 @@ func cmdCatchup() error {
 	reclaimStale()
 	var failed []string
 	for _, r := range rs {
+		if r.Backend == "run" && pidAlive(r.PID) {
+			continue
+		}
 		late := time.Since(r.FireAt)
+		if r.Backend == "run" && r.Exit == "" {
+			late = time.Since(r.Created)
+		}
 		if late < lateAfter {
 			continue
 		}
@@ -341,7 +350,11 @@ func deliver(r *Reminder) error {
 	if err := os.Rename(r.path(), claimed); err != nil {
 		return nil
 	}
-	msg := r.message(runWatch(r.Watch))
+	watch := runWatch(r.Watch)
+	msg := r.message(watch)
+	if r.Backend == "run" {
+		msg = r.runMessage(watch)
+	}
 	fig := r.Figaro
 	if fig == "" {
 		fig = "figaro"

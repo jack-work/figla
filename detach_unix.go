@@ -27,5 +27,11 @@ func killPID(pid int) {
 	}
 }
 
+func killGroup(pid int) {
+	if pid > 0 {
+		_ = syscall.Kill(-pid, syscall.SIGTERM)
+	}
+}
+
 func shell() string     { return "/bin/sh" }
 func shellFlag() string { return "-c" }

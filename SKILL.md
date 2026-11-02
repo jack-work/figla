@@ -22,6 +22,7 @@ daemons and tripped a memory-pressure alert doing exactly that.
 
 ```bash
 figla arm --aria <id> (--in <dur> | --at <time>) --about <text> [--watch <cmd>] [--name <n>]
+figla run --aria <id> [--about <text>] [--watch <cmd>] [--name <n>] -- <command...>
 figla list [--aria <id>] [--json]
 figla cancel <name> | --aria <id> --all
 figla catchup
@@ -33,6 +34,31 @@ for anything tied to the calendar (a kickoff, a deadline, a nightly job):
 computing `--in` by hand from the current time is arithmetic you can get wrong.
 
 Re-arming an existing `--name` replaces it.
+
+## When you started the command yourself: `figla run`
+
+If the thing you wait on is a command you would otherwise background (a build,
+a test suite, a deploy script), hand it to figla instead of guessing a time:
+
+```bash
+figla run --aria $MY_ARIA --about "full test suite" -- go test ./...
+```
+
+It returns at once. The command runs detached, through `sh -c`, in your
+current directory and environment. The moment it exits, the aria gets a
+message with the exit status, how long it took, and the last 2KB of
+stdout+stderr; the full log stays at `$XDG_STATE_HOME/figla/<aria>/<name>.log`.
+No duration to calibrate, nothing to cancel on success.
+
+- `--about` defaults to the command; `--name` defaults to a slug of `--about`.
+- `--watch` still works and runs after the command exits.
+- `figla cancel <name>` kills the command's process group and sends nothing.
+- `list` shows it with `VIA run` while it runs.
+- A run does not survive a reboot. Catchup notices the dead carrier and sends
+  `RUN LOST` with whatever output was logged.
+
+Use `arm` for work you do not own (a worker aria, a CI job): there is no
+process to watch, only a time to check back.
 
 ## The pattern
 

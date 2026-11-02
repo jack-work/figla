@@ -9,6 +9,7 @@ figaro skill at `~/.config/figaro/skills/figla.md`.
 
     figla arm --aria <id> --in 25m --about "what you are waiting on" \
           --watch "git -C /path/to/worktree log --oneline -1"
+    figla run --aria <id> --about "test suite" -- go test ./...
     figla list --aria <id>
     figla cancel --aria <id> --all
 
