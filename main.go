@@ -21,6 +21,7 @@ USAGE
   figla list [--aria <id>] [--json]
   figla cancel <name> | --aria <id> --all
   figla catchup
+  figla fermata [--dry-run] [--every 20s] [--dwell 2h] [--lead 60s]
   figla version
 
 ARM
@@ -55,6 +56,18 @@ CATCHUP
   Deliver every reminder more than 30s overdue. Run automatically by
   figla-catchup.timer; safe to run by hand.
 
+FERMATA
+  A daemon for seat holders whose role form sets
+  succession-policy.cache-succession = true. Every --every it reads each
+  holder's context, idleness, last provider round-trip and cache TTL, and
+  when context >= succession-policy.cache-threshold (default 30%), the
+  holder is idle and its prompt cache expires within --lead, it asks the
+  holder to succeed. Also when the cache has expired and a message is
+  queued. At most one ping per holder per seat, never within --dwell of
+  seating. Decisions go to $FIGLA_STATE/fermata.jsonl as JSON lines, one
+  per change. --dry-run sends nothing, evaluates every role with a
+  succession-policy, and logs to fermata-dry.jsonl.
+
 EXAMPLES
   figla arm --aria 86296c96 --in 25m --about "FX: footer + exit hang" \
         --watch "git -C /home/gluck/dev/figaro-qua/fx log --oneline -1"
@@ -80,6 +93,8 @@ func main() {
 		err = cmdCatchup()
 	case "fire": // internal: deliver now
 		err = cmdFire(os.Args[2:])
+	case "fermata":
+		err = cmdFermata(os.Args[2:])
 	case "run":
 		err = cmdRun(os.Args[2:])
 	case "runner": // internal: run the command, then deliver (run)
