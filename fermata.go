@@ -77,8 +77,12 @@ func decide(now time.Time, r Role, s Seat, g Reading, c fermataConfig) Verdict {
 	return Verdict{Why: "expired", Left: left}
 }
 
-func fermataMessage(ctx float64) string {
-	return fmt.Sprintf("fermata: your prompt cache expires in <60 s and you are at %d%%; succeed now per your succession policy", int(math.Round(ctx)))
+func fermataMessage(v Verdict, ctx float64) string {
+	pct := int(math.Round(ctx))
+	if v.Left <= 0 {
+		return fmt.Sprintf("fermata: your prompt cache has expired and you are at %d%%; succeed now per your succession policy, before you answer your queued message", pct)
+	}
+	return fmt.Sprintf("fermata: your prompt cache expires in <60 s and you are at %d%%; succeed now per your succession policy", pct)
 }
 
 func parsePolicy(raw json.RawMessage) Policy {
@@ -119,7 +123,9 @@ func figaroJSON(fig string, args ...string) ([]byte, error) {
 
 type fermata struct {
 	fig     string
-	gauge   *figaroGauge
+	gauge   Gauge
+	forms   func() []string
+	send    func(aria, msg string) error
 	cfg     fermataConfig
 	dry     bool
 	rescan  time.Duration
@@ -154,7 +160,7 @@ func (f *fermata) deriveRoles(now time.Time) {
 		f.known = map[string]bool{}
 		f.roles = map[string]Role{}
 	}
-	for _, form := range f.gauge.forms {
+	for _, form := range f.forms() {
 		if f.known[form] {
 			continue
 		}
@@ -192,6 +198,12 @@ func (f *fermata) tick(now time.Time) error {
 		return err
 	}
 	f.deriveRoles(now)
+	f.judge(now)
+	return f.saveSeats()
+}
+
+func (f *fermata) judge(now time.Time) {
+	told := map[string]bool{}
 	for _, r := range f.roles {
 		if !r.Policy.Enabled && !f.dry {
 			continue
@@ -203,9 +215,15 @@ func (f *fermata) tick(now time.Time) error {
 		}
 		s := f.seat(r, g, now)
 		v := decide(now, r, s, g, f.cfg)
+		if v.Ping && told[r.Holder] {
+			v = Verdict{Why: "told-via-other-role", Left: v.Left}
+			s.Pinged = now
+			f.seats[r.Form] = s
+		}
 		sendErr := ""
 		if v.Ping {
-			sendErr = f.ping(r, g)
+			told[r.Holder] = true
+			sendErr = f.ping(r, g, v)
 			if sendErr == "" {
 				s.Pinged = now
 				f.seats[r.Form] = s
@@ -218,16 +236,14 @@ func (f *fermata) tick(now time.Time) error {
 			delete(f.seats, form)
 		}
 	}
-	return f.saveSeats()
 }
 
-func (f *fermata) ping(r Role, g Reading) string {
+func (f *fermata) ping(r Role, g Reading, v Verdict) string {
 	if f.dry {
 		return ""
 	}
-	out, err := exec.Command(f.fig, "send", "-f", "--id", r.Holder, "--", fermataMessage(g.Context)).CombinedOutput()
-	if err != nil {
-		return strings.TrimSpace(string(out))
+	if err := f.send(r.Holder, fermataMessage(v, g.Context)); err != nil {
+		return err.Error()
 	}
 	return ""
 }
@@ -338,9 +354,18 @@ func cmdFermata(args []string) error {
 		return err
 	}
 	defer lf.Close()
+	gauge := newFigaroGauge(fig, figLog)
 	f := &fermata{
-		fig:     fig,
-		gauge:   newFigaroGauge(fig, figLog),
+		fig:   fig,
+		gauge: gauge,
+		forms: func() []string { return gauge.forms },
+		send: func(aria, msg string) error {
+			out, err := exec.Command(fig, "send", "-f", "--id", aria, "--", msg).CombinedOutput()
+			if err != nil {
+				return errors.New(strings.TrimSpace(string(out)))
+			}
+			return nil
+		},
 		cfg:     fermataConfig{Dwell: dwell, Lead: lead},
 		dry:     dry,
 		rescan:  rescan,

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -139,5 +140,52 @@ func TestSeatResetsOnNewHolder(t *testing.T) {
 	r.Holder = "h2"
 	if s := f.seat(r, Reading{Born: born}, now); !s.Since.Equal(now) || !s.Pinged.IsZero() {
 		t.Fatalf("new holder: got %+v, want a fresh seat at now", s)
+	}
+}
+
+func TestFermataMessageNamesTheBrokenCache(t *testing.T) {
+	warm := fermataMessage(Verdict{Ping: true, Why: "expiring", Left: 30 * time.Second}, 31.6)
+	if !strings.Contains(warm, "expires in <60 s") || !strings.Contains(warm, "32%") {
+		t.Errorf("expiring: %q", warm)
+	}
+	cold := fermataMessage(Verdict{Ping: true, Why: "expired-queued", Left: -time.Minute}, 40)
+	if strings.Contains(cold, "expires in") || !strings.Contains(cold, "has expired") {
+		t.Errorf("expired: %q", cold)
+	}
+}
+
+type stubGauge map[string]Reading
+
+func (g stubGauge) Refresh() error { return nil }
+func (g stubGauge) Read(aria string) (Reading, error) {
+	r, ok := g[aria]
+	if !ok {
+		return Reading{}, os.ErrNotExist
+	}
+	return r, nil
+}
+
+func TestOnePingPerHolderAcrossRoles(t *testing.T) {
+	now := time.Date(2026, 11, 10, 20, 0, 0, 0, time.UTC)
+	on := Policy{Present: true, Enabled: true, Threshold: 30}
+	var sent []string
+	f := &fermata{
+		gauge: stubGauge{"h": {Context: 40, TTL: 5 * time.Minute, Born: now.Add(-3 * time.Hour), LastTrip: now.Add(-270 * time.Second)}},
+		send:  func(aria, msg string) error { sent = append(sent, aria); return nil },
+		cfg:   fermataConfig{Dwell: 2 * time.Hour, Lead: time.Minute},
+		roles: map[string]Role{"@a": {Form: "@a", Holder: "h", Policy: on}, "@b": {Form: "@b", Holder: "h", Policy: on}},
+		seats: map[string]Seat{},
+		said:  map[string]string{},
+	}
+	f.log, _ = os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	f.judge(now)
+	f.judge(now.Add(20 * time.Second))
+	if len(sent) != 1 {
+		t.Fatalf("sent %v, want one ping to h", sent)
+	}
+	for form, s := range f.seats {
+		if s.Pinged.IsZero() {
+			t.Errorf("%s: seat not marked told", form)
+		}
 	}
 }
