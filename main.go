@@ -20,6 +20,7 @@ USAGE
   figla run --aria <id> [--about <text>] [--watch <cmd>] [--name <n>] -- <command...>
   figla list [--aria <id>] [--json]
   figla cancel <name> | --aria <id> --all
+  figla move --from <aria> --to <aria>
   figla catchup
   figla fermata [--dry-run] [--every 20s] [--dwell 2h] [--lead 60s]
   figla version
@@ -55,6 +56,12 @@ DURABILITY
 CATCHUP
   Deliver every reminder more than 30s overdue. Run automatically by
   figla-catchup.timer; safe to run by hand.
+
+MOVE
+  Hand every reminder and run of --from to --to, as a successor takes over
+  a seat. Timers are re-armed under the new aria; a running command keeps
+  running and reports to --to when it exits. A name --to already uses gets
+  the old aria's short id appended.
 
 FERMATA
   A daemon for seat holders whose role form sets
@@ -93,6 +100,8 @@ func main() {
 		err = cmdCatchup()
 	case "fire": // internal: deliver now
 		err = cmdFire(os.Args[2:])
+	case "move", "mv":
+		err = cmdMove(os.Args[2:])
 	case "fermata":
 		err = cmdFermata(os.Args[2:])
 	case "run":

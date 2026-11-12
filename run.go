@@ -114,7 +114,7 @@ func cmdRunner(args []string) error {
 	log.Close()
 	end := time.Now()
 
-	r, err = find(r.Aria, r.Name)
+	r, err = findMoved(r.Aria, r.Name)
 	if err != nil {
 		return nil
 	}

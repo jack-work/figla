@@ -25,6 +25,7 @@ figla arm --aria <id> (--in <dur> | --at <time>) --about <text> [--watch <cmd>] 
 figla run --aria <id> [--about <text>] [--watch <cmd>] [--name <n>] -- <command...>
 figla list [--aria <id>] [--json]
 figla cancel <name> | --aria <id> --all
+figla move --from <id> --to <id>
 figla catchup
 ```
 
@@ -34,6 +35,18 @@ for anything tied to the calendar (a kickoff, a deadline, a nightly job):
 computing `--in` by hand from the current time is arithmetic you can get wrong.
 
 Re-arming an existing `--name` replaces it.
+
+## When you hand over a seat: `figla move`
+
+A successor takes over its predecessor's waiting in one command:
+
+```bash
+figla move --from <old aria> --to <new aria>
+```
+
+Every reminder is re-armed under the new aria, and a running `figla run`
+reports to the new aria when it exits. If the successor already uses a
+name, the moved reminder gets the old aria's short id appended.
 
 ## When you started the command yourself: `figla run`
 
