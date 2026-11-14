@@ -74,6 +74,8 @@ FERMATA
   seating. Decisions go to $FIGLA_STATE/fermata.jsonl as JSON lines, one
   per change. --dry-run sends nothing, evaluates every role with a
   succession-policy, and logs to fermata-dry.jsonl.
+  A role form key fermata-hold of true, or of an RFC 3339 time still
+  ahead, holds every ping for that role.
 
 EXAMPLES
   figla arm --aria 86296c96 --in 25m --about "FX: footer + exit hang" \

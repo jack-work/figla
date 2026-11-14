@@ -37,9 +37,14 @@ func TestDecide(t *testing.T) {
 		{"one-hour cache", seated, with(func(r *Reading) { r.TTL = time.Hour; r.LastTrip = now.Add(-59*time.Minute - 30*time.Second) }), true, "expiring"},
 		{"expired, nothing queued", seated, with(func(r *Reading) { r.LastTrip = tripAt(-time.Second) }), false, "expired"},
 		{"expired with a queued message", seated, with(func(r *Reading) { r.LastTrip = tripAt(-time.Second); r.Queued = 1 }), true, "expired-queued"},
+		{"held for a window", seated, warm, false, "held"},
 		{"expired, busy, queued", seated, with(func(r *Reading) { r.LastTrip = tripAt(-time.Minute); r.Busy = true; r.Queued = 2 }), true, "expired-queued"},
 	}
 	for _, c := range cases {
+		role.Hold = ""
+		if c.why == "held" {
+			role.Hold = now.Add(time.Hour).Format(time.RFC3339)
+		}
 		v := decide(now, role, c.seat, c.read, cfg)
 		if v.Ping != c.ping || v.Why != c.why {
 			t.Errorf("%s: got ping=%v why=%s, want ping=%v why=%s", c.name, v.Ping, v.Why, c.ping, c.why)
@@ -186,6 +191,19 @@ func TestOnePingPerHolderAcrossRoles(t *testing.T) {
 	for form, s := range f.seats {
 		if s.Pinged.IsZero() {
 			t.Errorf("%s: seat not marked told", form)
+		}
+	}
+}
+
+func TestHeld(t *testing.T) {
+	now := time.Date(2026, 11, 13, 20, 0, 0, 0, time.UTC)
+	for hold, want := range map[string]bool{
+		"": false, "true": true, "TRUE": true, "false": false, "junk": false,
+		now.Add(time.Minute).Format(time.RFC3339):  true,
+		now.Add(-time.Minute).Format(time.RFC3339): false,
+	} {
+		if got := held(hold, now); got != want {
+			t.Errorf("%q: got %v, want %v", hold, got, want)
 		}
 	}
 }

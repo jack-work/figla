@@ -25,6 +25,16 @@ type Role struct {
 	Form   string
 	Holder string
 	Policy Policy
+	Hold   string
+}
+
+func held(hold string, now time.Time) bool {
+	hold = strings.TrimSpace(hold)
+	if strings.EqualFold(hold, "true") {
+		return true
+	}
+	until, err := time.Parse(time.RFC3339, hold)
+	return err == nil && now.Before(until)
 }
 
 type Seat struct {
@@ -47,6 +57,9 @@ type Verdict struct {
 func decide(now time.Time, r Role, s Seat, g Reading, c fermataConfig) Verdict {
 	if !s.Pinged.IsZero() {
 		return Verdict{Why: "pinged"}
+	}
+	if held(r.Hold, now) {
+		return Verdict{Why: "held"}
 	}
 	if now.Sub(s.Since) < c.Dwell {
 		return Verdict{Why: "dwell"}
@@ -139,18 +152,20 @@ type fermata struct {
 }
 
 func (f *fermata) readRole(form string) (Role, bool) {
-	out, err := figaroJSON(f.fig, "get", "--id", form, "-j", "target-aria", "succession-policy")
+	out, err := figaroJSON(f.fig, "get", "--id", form, "-j", "target-aria", "succession-policy", "fermata-hold")
 	if err != nil {
 		return Role{}, false
 	}
 	var v struct {
 		Target string          `json:"target-aria"`
 		Policy json.RawMessage `json:"succession-policy"`
+		Hold   json.RawMessage `json:"fermata-hold"`
 	}
 	if json.Unmarshal(out, &v) != nil || v.Target == "" {
 		return Role{}, false
 	}
-	return Role{Form: form, Holder: v.Target, Policy: parsePolicy(v.Policy)}, true
+	hold := strings.Trim(string(v.Hold), `"`)
+	return Role{Form: form, Holder: v.Target, Policy: parsePolicy(v.Policy), Hold: hold}, true
 }
 
 func (f *fermata) deriveRoles(now time.Time) {
