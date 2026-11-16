@@ -22,10 +22,21 @@ func splitCommand(args []string) (opts, command []string) {
 	return args, nil
 }
 
+func commandLine(argv []string) string {
+	if len(argv) == 1 {
+		return strings.TrimSpace(argv[0])
+	}
+	quoted := make([]string, len(argv))
+	for i, a := range argv {
+		quoted[i] = quoteArg(a)
+	}
+	return strings.Join(quoted, " ")
+}
+
 func cmdRun(args []string) error {
 	opts, command := splitCommand(args)
 	f, _ := flags(opts)
-	line := strings.TrimSpace(strings.Join(command, " "))
+	line := commandLine(command)
 	if f["aria"] == "" || line == "" {
 		return errors.New("run needs --aria and a command after --")
 	}

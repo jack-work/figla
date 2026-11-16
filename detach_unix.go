@@ -4,6 +4,7 @@ package main
 
 import (
 	"os/exec"
+	"strings"
 	"syscall"
 )
 
@@ -35,3 +36,10 @@ func killGroup(pid int) {
 
 func shell() string     { return "/bin/sh" }
 func shellFlag() string { return "-c" }
+
+func quoteArg(s string) string {
+	if s != "" && strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_./=:,+@%") == "" {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}

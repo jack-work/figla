@@ -119,3 +119,38 @@ func TestCatchupLeavesALiveRunAlone(t *testing.T) {
 		t.Fatalf("catchup reported a run that is still running: %s", b)
 	}
 }
+
+func TestRunKeepsEachArgumentWhole(t *testing.T) {
+	bin := build(t)
+	state, sent, path := env(t)
+	defer reap(t, bin, state, path, "q")
+	out, err := runWith(t, bin, state, path, []string{"FIGLA_BACKEND=detach", "FIGLA_DUMMY_TOKEN=must-not-leak"},
+		"run", "--aria", "q", "--name", "argv", "--", "bash", "-c", `set -eu; printf 'one\n'; printf "it's two\n"`)
+	if err != nil {
+		t.Fatalf("run: %v\n%s", err, out)
+	}
+	got := waitSent(t, sent, "after", 20*time.Second)
+	log, _ := os.ReadFile(filepath.Join(state, "q", "argv.log"))
+	if strings.Contains(got+string(log), "must-not-leak") {
+		t.Fatal("the command lost its quoting and dumped the environment")
+	}
+	if !strings.Contains(got, "one\nit's two") {
+		t.Fatalf("the script did not run whole:\n%s", got)
+	}
+}
+
+func TestCommandLine(t *testing.T) {
+	for _, c := range []struct {
+		argv []string
+		want string
+	}{
+		{[]string{"go test ./... && echo ok"}, "go test ./... && echo ok"},
+		{[]string{"go", "test", "./..."}, "go test ./..."},
+		{[]string{"bash", "-c", "set -e; echo hi"}, "bash -c 'set -e; echo hi'"},
+		{[]string{"echo", "it's", ""}, `echo 'it'\''s' ''`},
+	} {
+		if got := commandLine(c.argv); got != c.want {
+			t.Errorf("%q: got %s, want %s", c.argv, got, c.want)
+		}
+	}
+}
