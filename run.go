@@ -114,7 +114,7 @@ func cmdRunner(args []string) error {
 	if err != nil {
 		return nil
 	}
-	log, err := os.Create(r.Log)
+	log, err := os.OpenFile(r.Log, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}

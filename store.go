@@ -66,14 +66,14 @@ func (r *Reminder) path() string {
 }
 
 func (r *Reminder) save() error {
-	if err := os.MkdirAll(filepath.Dir(r.path()), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(r.path()), 0o700); err != nil {
 		return err
 	}
 	b, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(r.path(), b, 0o644)
+	return os.WriteFile(r.path(), b, 0o600)
 }
 
 func (r *Reminder) remove() error { return os.Remove(r.path()) }

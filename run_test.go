@@ -154,3 +154,22 @@ func TestCommandLine(t *testing.T) {
 		}
 	}
 }
+
+func TestRunLogIsPrivate(t *testing.T) {
+	bin := build(t)
+	state, sent, path := env(t)
+	defer reap(t, bin, state, path, "p")
+	if out, err := run(t, bin, state, path, "run", "--aria", "p", "--name", "priv", "--", "echo hi"); err != nil {
+		t.Fatalf("run: %v\n%s", err, out)
+	}
+	waitSent(t, sent, "after", 20*time.Second)
+	for _, p := range []string{filepath.Join(state, "p"), filepath.Join(state, "p", "priv.log")} {
+		st, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Mode().Perm()&0o077 != 0 {
+			t.Errorf("%s is %v; a run log can hold whatever the command printed", p, st.Mode().Perm())
+		}
+	}
+}
