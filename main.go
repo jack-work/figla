@@ -22,7 +22,7 @@ USAGE
   figla cancel <name> | --aria <id> --all
   figla move --from <aria> --to <aria>
   figla catchup
-  figla fermata [--dry-run] [--every 20s] [--dwell 2h] [--lead 60s]
+  figla fermata [--dry-run] [--every 20s] [--dwell 2h] [--lead 2m]
   figla version
 
 ARM
@@ -76,6 +76,12 @@ FERMATA
   succession-policy, and logs to fermata-dry.jsonl.
   A role form key fermata-hold of true, or of an RFC 3339 time still
   ahead, holds every ping for that role.
+  The cache clock starts at the holder's last successful Messages request
+  or completed Responses stream (SSE or WS). Messages routes use the
+  holder's system.cache_control TTL; Responses routes need an explicit
+  succession-policy.cache-idle-budget (e.g. "5m"), which also overrides
+  the TTL where set. A clock from before a route change, or from before
+  the daemon started, is not trusted until the next request.
 
 EXAMPLES
   figla arm --aria 86296c96 --in 25m --about "FX: footer + exit hang" \

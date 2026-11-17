@@ -19,6 +19,9 @@ type Reading struct {
 	TTL      time.Duration
 	Queued   int
 	Provider string
+	Route    string
+	Clock    string
+	Fenced   bool
 }
 
 type Gauge interface {
@@ -37,13 +40,16 @@ func cacheTTL(setting string) time.Duration {
 }
 
 type tripLog struct {
-	path string
-	off  int64
-	last map[string]time.Time
+	path  string
+	off   int64
+	last  map[string]time.Time
+	kind  map[string]string
+	fresh map[string]bool
+	read  bool
 }
 
 func newTripLog(path string) *tripLog {
-	return &tripLog{path: path, last: map[string]time.Time{}}
+	return &tripLog{path: path, last: map[string]time.Time{}, kind: map[string]string{}, fresh: map[string]bool{}}
 }
 
 func figaroLogPath() string {
@@ -67,6 +73,9 @@ func (t *tripLog) Refresh() error {
 	if st.Size() < t.off {
 		t.off = 0
 	}
+	booting := !t.read
+	t.read = true
+	clear(t.fresh)
 	if _, err := f.Seek(t.off, io.SeekStart); err != nil {
 		return err
 	}
@@ -77,15 +86,28 @@ func (t *tripLog) Refresh() error {
 			return nil
 		}
 		t.off += int64(len(line))
-		t.take(line)
+		if aria := t.take(line); aria != "" && !booting {
+			t.fresh[aria] = true
+		}
 	}
 }
 
 var roundTripMark = []byte(`"provider round-trip"`)
 
-func (t *tripLog) take(line []byte) {
+func tripKind(method, url string, status int64, stream, errClass string) string {
+	switch {
+	case method == "POST" && strings.HasSuffix(url, "/messages") && status >= 200 && status < 300:
+		return "messages"
+	case (method == "SSE" || method == "WS") && strings.HasSuffix(url, "/responses") &&
+		(stream == "ok" || stream == "completed") && errClass == "":
+		return "responses"
+	}
+	return ""
+}
+
+func (t *tripLog) take(line []byte) string {
 	if !bytes.Contains(line, roundTripMark) {
-		return
+		return ""
 	}
 	var row struct {
 		Timestamp  time.Time
@@ -95,9 +117,9 @@ func (t *tripLog) take(line []byte) {
 		}
 	}
 	if json.Unmarshal(line, &row) != nil {
-		return
+		return ""
 	}
-	var aria, method, url string
+	var aria, method, url, stream, errClass string
 	var dur, status int64
 	for _, a := range row.Attributes {
 		switch a.Key {
@@ -111,15 +133,25 @@ func (t *tripLog) take(line []byte) {
 			_ = json.Unmarshal(a.Value.Value, &dur)
 		case "status":
 			_ = json.Unmarshal(a.Value.Value, &status)
+		case "stream_status":
+			_ = json.Unmarshal(a.Value.Value, &stream)
+		case "stream_err_class":
+			_ = json.Unmarshal(a.Value.Value, &errClass)
 		}
 	}
-	if aria == "" || method != "POST" || !strings.HasSuffix(url, "/messages") || status < 200 || status >= 300 {
-		return
+	if i := strings.IndexByte(url, '?'); i >= 0 {
+		url = url[:i]
+	}
+	kind := tripKind(method, url, status, stream, errClass)
+	if aria == "" || kind == "" {
+		return ""
 	}
 	at := row.Timestamp.Add(-time.Duration(dur) * time.Millisecond)
 	if at.After(t.last[aria]) {
 		t.last[aria] = at
+		t.kind[aria] = kind
 	}
+	return aria
 }
 
 type ariaRow struct {
@@ -129,17 +161,19 @@ type ariaRow struct {
 	CreatedAt    int64  `json:"created_at"`
 	ContextTok   int64  `json:"context_tokens"`
 	ContextLimit *int64 `json:"context_limit"`
+	Model        string `json:"model"`
 }
 
 type figaroGauge struct {
-	fig   string
-	trips *tripLog
-	rows  map[string]ariaRow
-	forms []string
+	fig     string
+	trips   *tripLog
+	routeAt map[string]string
+	rows    map[string]ariaRow
+	forms   []string
 }
 
 func newFigaroGauge(fig, logPath string) *figaroGauge {
-	return &figaroGauge{fig: fig, trips: newTripLog(logPath)}
+	return &figaroGauge{fig: fig, trips: newTripLog(logPath), routeAt: map[string]string{}}
 }
 
 func (g *figaroGauge) Refresh() error {
@@ -159,8 +193,18 @@ func (g *figaroGauge) Refresh() error {
 			g.forms = append(g.forms, r.ID)
 		}
 	}
-	return g.trips.Refresh()
+	if err := g.trips.Refresh(); err != nil {
+		return err
+	}
+	for aria := range g.trips.fresh {
+		if r, ok := g.rows[aria]; ok {
+			g.routeAt[aria] = route(r)
+		}
+	}
+	return nil
 }
+
+func route(r ariaRow) string { return r.Provider + "/" + r.Model }
 
 func (g *figaroGauge) row(aria string) (ariaRow, bool) {
 	if r, ok := g.rows[aria]; ok {
@@ -186,6 +230,11 @@ func (g *figaroGauge) Read(aria string) (Reading, error) {
 		LastTrip: g.trips.last[r.ID],
 		TTL:      5 * time.Minute,
 		Provider: r.Provider,
+		Route:    route(r),
+		Clock:    g.trips.kind[r.ID],
+	}
+	if !rd.LastTrip.IsZero() && g.routeAt[r.ID] != rd.Route {
+		rd.Fenced = true
 	}
 	if r.ContextLimit != nil && *r.ContextLimit > 0 {
 		rd.Context = 100 * float64(r.ContextTok) / float64(*r.ContextLimit)
