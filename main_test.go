@@ -550,3 +550,38 @@ func TestConcurrentCatchupDoesNotStealAFreshClaim(t *testing.T) {
 		t.Fatalf("delivered %d times", n)
 	}
 }
+
+func TestCatchupDropsReminderForReapedAria(t *testing.T) {
+	bin := build(t)
+	state, _, path := env(t)
+	fig := fakeFigaro(t, path, "#!/bin/sh\necho 'error: prompt: jsonrpc error -32000: aria is reaped: gone was reaped' >&2\nexit 1\n")
+	writeRecord(t, state, Reminder{
+		Name: "orphan", Aria: "gone", About: "for a reaped aria", Backend: "detach",
+		Created: time.Now().Add(-3 * time.Hour), FireAt: time.Now().Add(-time.Hour), Figaro: fig,
+	})
+	out, err := run(t, bin, state, path, "catchup")
+	if err != nil {
+		t.Fatalf("catchup failed on a reaped aria, failing its unit: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "dropped gone/orphan") {
+		t.Fatalf("drop not journaled:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(state, "gone", "orphan.json")); !os.IsNotExist(err) {
+		t.Fatal("reaped aria's reminder kept for another retry")
+	}
+}
+
+func TestCatchupIgnoresNonReminderState(t *testing.T) {
+	bin := build(t)
+	state, _, path := env(t)
+	if err := os.MkdirAll(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, "fermata.json"), []byte(`{"@role":{"holder":"h","since":"2026-11-17T10:00:00Z"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := run(t, bin, state, path, "catchup")
+	if err != nil || strings.Contains(out, "delivered") {
+		t.Fatalf("catchup treated fermata's seat file as a reminder: %v\n%s", err, out)
+	}
+}

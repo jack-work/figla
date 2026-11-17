@@ -291,7 +291,12 @@ func cmdFire(args []string) error {
 	if err != nil {
 		return nil
 	}
-	return deliver(r)
+	if err := deliver(r); errors.Is(err, errReaped) {
+		fmt.Printf("dropped %s/%s: its aria is reaped\n", r.Aria, r.Name)
+	} else if err != nil {
+		return err
+	}
+	return nil
 }
 
 func cmdCatchup() error {
@@ -313,7 +318,10 @@ func cmdCatchup() error {
 			continue
 		}
 		id := r.Aria + "/" + r.Name
-		if err := deliver(r); err != nil {
+		if err := deliver(r); errors.Is(err, errReaped) {
+			fmt.Printf("dropped %s: its aria is reaped\n", id)
+			continue
+		} else if err != nil {
 			if late > giveUpAfter {
 				disarm(r)
 				_ = r.remove()
@@ -343,6 +351,8 @@ func reclaimStale() {
 	})
 }
 
+var errReaped = errors.New("aria is reaped")
+
 func deliver(r *Reminder) error {
 	claimed := r.path() + ".firing"
 	now := time.Now()
@@ -371,6 +381,11 @@ func deliver(r *Reminder) error {
 			_ = os.Remove(claimed)
 			retire(r)
 			return nil
+		}
+		if strings.Contains(string(out), "aria is reaped") {
+			_ = os.Remove(claimed)
+			disarm(r)
+			return errReaped
 		}
 		err = fmt.Errorf("send to %s: %s", r.Aria, strings.TrimSpace(string(out)))
 	}

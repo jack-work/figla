@@ -97,7 +97,7 @@ func load(aria string) ([]*Reminder, error) {
 			return nil
 		}
 		var r Reminder
-		if json.Unmarshal(b, &r) != nil {
+		if json.Unmarshal(b, &r) != nil || r.Aria == "" || r.Name == "" {
 			return nil
 		}
 		out = append(out, &r)
