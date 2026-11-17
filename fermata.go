@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -370,6 +371,10 @@ func durFlag(f map[string]string, k string, def time.Duration) (time.Duration, e
 
 func cmdFermata(args []string) error {
 	fl, rest := flags(args)
+	if fl["help"] != "" || slices.Contains(rest, "-h") {
+		fmt.Print(usage)
+		return nil
+	}
 	if len(rest) > 0 {
 		return fmt.Errorf("fermata: unexpected %q", rest[0])
 	}

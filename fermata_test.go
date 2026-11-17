@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -330,3 +331,25 @@ func TestHolderReresolvedBeforeSending(t *testing.T) {
 	}
 }
 
+func TestFermataHelpStartsNoWatcher(t *testing.T) {
+	bin := build(t)
+	state, _, path := env(t)
+	for _, arg := range []string{"--help", "-h"} {
+		c := exec.Command(bin, "fermata", arg)
+		c.Env = append(os.Environ(), "FIGLA_STATE="+state, "PATH="+path)
+		done := make(chan error, 1)
+		go func() { done <- c.Run() }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("%s: %v", arg, err)
+			}
+		case <-time.After(10 * time.Second):
+			c.Process.Kill()
+			t.Fatalf("fermata %s started a watcher", arg)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(state, "fermata.jsonl")); err == nil {
+		t.Fatal("fermata --help wrote a decision log")
+	}
+}
