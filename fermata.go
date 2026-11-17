@@ -172,21 +172,21 @@ func figaroJSON(fig string, args ...string) ([]byte, error) {
 }
 
 type fermata struct {
-	fig     string
-	gauge   Gauge
-	forms   func() []string
-	recheck func(form string) (Role, bool)
-	send    func(aria, msg string) error
-	cfg     fermataConfig
-	dry     bool
-	rescan  time.Duration
-	scanned time.Time
-	known   map[string]bool
-	roles   map[string]Role
-	seats   map[string]Seat
-	said    map[string]string
-	seatsAt string
-	log     *os.File
+	fig      string
+	gauge    Gauge
+	forms    func() map[string]int64
+	readForm func(form string) (Role, bool)
+	send     func(aria, msg string) error
+	cfg      fermataConfig
+	dry      bool
+	rescan   time.Duration
+	scanned  time.Time
+	seen     map[string]int64
+	roles    map[string]Role
+	seats    map[string]Seat
+	said     map[string]string
+	seatsAt  string
+	log      *os.File
 }
 
 func (f *fermata) readRole(form string) (Role, bool) {
@@ -207,29 +207,26 @@ func (f *fermata) readRole(form string) (Role, bool) {
 }
 
 func (f *fermata) deriveRoles(now time.Time) {
-	full := now.Sub(f.scanned) >= f.rescan
-	if full {
+	if now.Sub(f.scanned) >= f.rescan {
 		f.scanned = now
-		f.known = map[string]bool{}
-		f.roles = map[string]Role{}
+		f.seen = map[string]int64{}
 	}
-	for _, form := range f.forms() {
-		if f.known[form] {
+	forms := f.forms()
+	for form, at := range forms {
+		if seen, ok := f.seen[form]; ok && seen == at {
 			continue
 		}
-		f.known[form] = true
-		if r, ok := f.readRole(form); ok && r.Policy.Present {
-			f.roles[form] = r
-		}
-	}
-	if full {
-		return
-	}
-	for form := range f.roles {
-		if r, ok := f.readRole(form); ok && r.Policy.Present {
+		f.seen[form] = at
+		if r, ok := f.readForm(form); ok && r.Policy.Present {
 			f.roles[form] = r
 		} else {
 			delete(f.roles, form)
+		}
+	}
+	for form := range f.roles {
+		if _, ok := forms[form]; !ok {
+			delete(f.roles, form)
+			delete(f.seen, form)
 		}
 	}
 }
@@ -268,8 +265,13 @@ func (f *fermata) judge(now time.Time) {
 		}
 		s := f.seat(r, g, now)
 		v := decide(now, r, s, g, f.cfg)
-		if v.Ping && f.recheck != nil {
-			if cur, ok := f.recheck(r.Form); !ok || cur.Holder != r.Holder {
+		if v.Why == "expired" {
+			if g.Queued = f.gauge.Queued(r.Holder); g.Queued > 0 {
+				v = decide(now, r, s, g, f.cfg)
+			}
+		}
+		if v.Ping && f.readForm != nil {
+			if cur, ok := f.readForm(r.Form); !ok || cur.Holder != r.Holder {
 				v = Verdict{Why: "holder-changed"}
 			}
 		}
@@ -390,7 +392,7 @@ func cmdFermata(args []string) error {
 	if err != nil {
 		return err
 	}
-	rescan, err := durFlag(fl, "rescan", 5*time.Minute)
+	rescan, err := durFlag(fl, "rescan", time.Hour)
 	if err != nil {
 		return err
 	}
@@ -423,7 +425,8 @@ func cmdFermata(args []string) error {
 	f := &fermata{
 		fig:   fig,
 		gauge: gauge,
-		forms: func() []string { return gauge.forms },
+		forms: func() map[string]int64 { return gauge.forms },
+		roles: map[string]Role{},
 		send: func(aria, msg string) error {
 			out, err := exec.Command(fig, "send", "-f", "--id", aria, "--", msg).CombinedOutput()
 			if err != nil {
@@ -438,7 +441,7 @@ func cmdFermata(args []string) error {
 		seatsAt: filepath.Join(stateDir(), name+".json"),
 		log:     lf,
 	}
-	f.recheck = f.readRole
+	f.readForm = f.readRole
 	f.loadSeats()
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)

@@ -27,6 +27,7 @@ type Reading struct {
 type Gauge interface {
 	Refresh() error
 	Read(aria string) (Reading, error)
+	Queued(aria string) int
 }
 
 func cacheTTL(setting string) time.Duration {
@@ -162,6 +163,7 @@ type ariaRow struct {
 	ContextTok   int64  `json:"context_tokens"`
 	ContextLimit *int64 `json:"context_limit"`
 	Model        string `json:"model"`
+	LastActive   int64  `json:"last_active"`
 }
 
 type figaroGauge struct {
@@ -169,11 +171,19 @@ type figaroGauge struct {
 	trips   *tripLog
 	routeAt map[string]string
 	rows    map[string]ariaRow
-	forms   []string
+	forms   map[string]int64
+	ttls    map[string]ttlRead
 }
 
+type ttlRead struct {
+	ttl time.Duration
+	at  time.Time
+}
+
+const ttlReread = 15 * time.Minute
+
 func newFigaroGauge(fig, logPath string) *figaroGauge {
-	return &figaroGauge{fig: fig, trips: newTripLog(logPath), routeAt: map[string]string{}}
+	return &figaroGauge{fig: fig, trips: newTripLog(logPath), routeAt: map[string]string{}, ttls: map[string]ttlRead{}}
 }
 
 func (g *figaroGauge) Refresh() error {
@@ -186,11 +196,11 @@ func (g *figaroGauge) Refresh() error {
 		return err
 	}
 	g.rows = make(map[string]ariaRow, len(rows))
-	g.forms = g.forms[:0]
+	g.forms = map[string]int64{}
 	for _, r := range rows {
 		g.rows[r.ID] = r
 		if r.State == "form" {
-			g.forms = append(g.forms, r.ID)
+			g.forms[r.ID] = r.LastActive
 		}
 	}
 	if err := g.trips.Refresh(); err != nil {
@@ -239,17 +249,35 @@ func (g *figaroGauge) Read(aria string) (Reading, error) {
 	if r.ContextLimit != nil && *r.ContextLimit > 0 {
 		rd.Context = 100 * float64(r.ContextTok) / float64(*r.ContextLimit)
 	}
+	rd.TTL = g.ttl(r.ID)
+	return rd, nil
+}
+
+func (g *figaroGauge) ttl(aria string) time.Duration {
+	if t, ok := g.ttls[aria]; ok && time.Since(t.at) < ttlReread {
+		return t.ttl
+	}
+	ttl := 5 * time.Minute
 	var cc struct {
 		CacheControl *string `json:"system.cache_control"`
 	}
-	if out, _ := figaroJSON(g.fig, "get", "--id", r.ID, "-j", "system.cache_control"); json.Unmarshal(out, &cc) == nil && cc.CacheControl != nil {
-		rd.TTL = cacheTTL(*cc.CacheControl)
+	if out, _ := figaroJSON(g.fig, "get", "--id", aria, "-j", "system.cache_control"); json.Unmarshal(out, &cc) == nil && cc.CacheControl != nil {
+		ttl = cacheTTL(*cc.CacheControl)
+	}
+	g.ttls[aria] = ttlRead{ttl: ttl, at: time.Now()}
+	return ttl
+}
+
+func (g *figaroGauge) Queued(aria string) int {
+	r, ok := g.row(aria)
+	if !ok {
+		return 0
 	}
 	var q struct {
 		Queue []json.RawMessage `json:"queue"`
 	}
 	if out, err := figaroJSON(g.fig, "queue", "--id", r.ID, "-j"); err == nil && json.Unmarshal(out, &q) == nil {
-		rd.Queued = len(q.Queue)
+		return len(q.Queue)
 	}
-	return rd, nil
+	return 0
 }

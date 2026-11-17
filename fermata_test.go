@@ -164,7 +164,8 @@ func TestFermataMessageNamesTheBrokenCache(t *testing.T) {
 
 type stubGauge map[string]Reading
 
-func (g stubGauge) Refresh() error { return nil }
+func (g stubGauge) Refresh() error         { return nil }
+func (g stubGauge) Queued(aria string) int { return g[aria].Queued }
 func (g stubGauge) Read(aria string) (Reading, error) {
 	r, ok := g[aria]
 	if !ok {
@@ -254,7 +255,9 @@ func TestDecideWarmCacheClock(t *testing.T) {
 }
 
 func TestTripLogReadsResponsesStreams(t *testing.T) {
-	attr := func(k string, v any) map[string]any { return map[string]any{"Key": k, "Value": map[string]any{"Value": v}} }
+	attr := func(k string, v any) map[string]any {
+		return map[string]any{"Key": k, "Value": map[string]any{"Value": v}}
+	}
 	row := func(ts, method, url string, extra ...map[string]any) string {
 		a := append([]any{attr("aria", "a"), attr("method", method), attr("url", url), attr("duration_ms", 1000)}, toAny(extra)...)
 		b, _ := json.Marshal(map[string]any{"Timestamp": ts, "Body": map[string]any{"Value": "provider round-trip"}, "Attributes": a})
@@ -293,7 +296,7 @@ func toAny(m []map[string]any) []any {
 }
 
 func TestGaugeFencesRouteChangesAndBoot(t *testing.T) {
-	g := &figaroGauge{trips: newTripLog(""), routeAt: map[string]string{}}
+	g := &figaroGauge{trips: newTripLog(""), routeAt: map[string]string{}, ttls: map[string]ttlRead{}}
 	g.rows = map[string]ariaRow{"a": {ID: "a", Provider: "chatgpt", Model: "gpt"}}
 	g.trips.last["a"] = time.Now()
 	g.trips.kind["a"] = "responses"
@@ -316,13 +319,13 @@ func TestHolderReresolvedBeforeSending(t *testing.T) {
 	on := Policy{Present: true, Enabled: true, Threshold: 30}
 	var sent []string
 	f := &fermata{
-		gauge:   stubGauge{"h": {Context: 40, TTL: 5 * time.Minute, Born: now.Add(-3 * time.Hour), LastTrip: now.Add(-270 * time.Second)}},
-		send:    func(aria, msg string) error { sent = append(sent, aria); return nil },
-		recheck: func(string) (Role, bool) { return Role{Holder: "successor"}, true },
-		cfg:     fermataConfig{Dwell: 2 * time.Hour, Lead: time.Minute},
-		roles:   map[string]Role{"@a": {Form: "@a", Holder: "h", Policy: on}},
-		seats:   map[string]Seat{},
-		said:    map[string]string{},
+		gauge:    stubGauge{"h": {Context: 40, TTL: 5 * time.Minute, Born: now.Add(-3 * time.Hour), LastTrip: now.Add(-270 * time.Second)}},
+		send:     func(aria, msg string) error { sent = append(sent, aria); return nil },
+		readForm: func(string) (Role, bool) { return Role{Holder: "successor"}, true },
+		cfg:      fermataConfig{Dwell: 2 * time.Hour, Lead: time.Minute},
+		roles:    map[string]Role{"@a": {Form: "@a", Holder: "h", Policy: on}},
+		seats:    map[string]Seat{},
+		said:     map[string]string{},
 	}
 	f.log, _ = os.OpenFile(os.DevNull, os.O_WRONLY, 0)
 	f.judge(now)
@@ -351,5 +354,83 @@ func TestFermataHelpStartsNoWatcher(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(state, "fermata.jsonl")); err == nil {
 		t.Fatal("fermata --help wrote a decision log")
+	}
+}
+
+func TestRolesRereadOnlyWhenTheirFormChanges(t *testing.T) {
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	forms := map[string]int64{"@role": 1, "@note": 1}
+	reads := map[string]int{}
+	holder := "h1"
+	f := &fermata{
+		forms:  func() map[string]int64 { return forms },
+		rescan: time.Hour,
+		roles:  map[string]Role{},
+		readForm: func(form string) (Role, bool) {
+			reads[form]++
+			if form == "@note" {
+				return Role{}, false
+			}
+			return Role{Form: form, Holder: holder, Policy: Policy{Present: true}}, true
+		},
+	}
+	f.deriveRoles(now)
+	f.deriveRoles(now.Add(20 * time.Second))
+	if reads["@role"] != 1 || reads["@note"] != 1 {
+		t.Fatalf("unchanged forms re-read: %v", reads)
+	}
+	holder, forms["@role"] = "h2", 2
+	f.deriveRoles(now.Add(40 * time.Second))
+	if reads["@role"] != 2 || f.roles["@role"].Holder != "h2" {
+		t.Fatalf("a changed role form was not re-read: %v, %+v", reads, f.roles["@role"])
+	}
+	delete(forms, "@role")
+	f.deriveRoles(now.Add(60 * time.Second))
+	if _, ok := f.roles["@role"]; ok {
+		t.Fatal("a deleted role form is still a role")
+	}
+	f.deriveRoles(now.Add(2 * time.Hour))
+	if reads["@note"] != 2 {
+		t.Fatalf("the hourly rescan skipped a form: %v", reads)
+	}
+}
+
+type countingGauge struct {
+	stubGauge
+	queues map[string]int
+	asked  int
+}
+
+func (g *countingGauge) Queued(aria string) int { g.asked++; return g.queues[aria] }
+
+func TestQueueReadOnlyForAnExpiredCache(t *testing.T) {
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	on := Policy{Present: true, Enabled: true, Threshold: 30}
+	born := now.Add(-3 * time.Hour)
+	g := &countingGauge{stubGauge: stubGauge{
+		"warm":    {Context: 40, TTL: 5 * time.Minute, Born: born, LastTrip: now.Add(-time.Minute)},
+		"cold":    {Context: 40, TTL: 5 * time.Minute, Born: born, LastTrip: now.Add(-time.Hour)},
+		"smaller": {Context: 10, TTL: 5 * time.Minute, Born: born, LastTrip: now.Add(-time.Hour)},
+	}, queues: map[string]int{"cold": 1, "smaller": 1}}
+	var sent []string
+	f := &fermata{
+		gauge: g,
+		send:  func(aria, msg string) error { sent = append(sent, aria); return nil },
+		cfg:   fermataConfig{Dwell: 2 * time.Hour, Lead: 2 * time.Minute},
+		roles: map[string]Role{
+			"@w": {Form: "@w", Holder: "warm", Policy: on},
+			"@c": {Form: "@c", Holder: "cold", Policy: on},
+			"@s": {Form: "@s", Holder: "smaller", Policy: on},
+		},
+		seats: map[string]Seat{},
+		said:  map[string]string{},
+	}
+	f.log, _ = os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	f.judge(now)
+	if g.asked != 1 {
+		t.Fatalf("queue read %d times, want once (only the expired holder above threshold)", g.asked)
+	}
+	if len(sent) != 1 || sent[0] != "cold" {
+		t.Fatalf("sent %v, want the expired holder with a queued message", sent)
 	}
 }
