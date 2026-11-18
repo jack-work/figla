@@ -171,9 +171,9 @@ func cmdArm(args []string) error {
 	if err != nil {
 		return err
 	}
-	name := f["name"]
-	if name == "" {
-		name = slug(about)
+	name, err := freeName(aria, f["name"], about)
+	if err != nil {
+		return err
 	}
 	fig, err := exec.LookPath("figaro")
 	if err != nil {
@@ -319,6 +319,26 @@ func until(t time.Time) string {
 		return "overdue"
 	}
 	return d.String()
+}
+
+func freeName(aria, explicit, about string) (string, error) {
+	if explicit != "" {
+		if heldByLiveRun(aria, explicit) {
+			return "", fmt.Errorf("%s/%s is a command still running; cancel it first or pick another --name", aria, explicit)
+		}
+		return explicit, nil
+	}
+	base := slug(about)
+	name := base
+	for n := 2; heldByLiveRun(aria, name); n++ {
+		name = fmt.Sprintf("%s-%d", base, n)
+	}
+	return name, nil
+}
+
+func heldByLiveRun(aria, name string) bool {
+	r, err := find(aria, name)
+	return err == nil && r.Backend == "run" && pending(r)
 }
 
 func slug(s string) string {

@@ -173,3 +173,31 @@ func TestRunLogIsPrivate(t *testing.T) {
 		}
 	}
 }
+
+func TestArmNeverReplacesALiveRun(t *testing.T) {
+	bin := build(t)
+	state, sent, path := env(t)
+	reap(t, bin, state, path, "an")
+	marker := filepath.Join(t.TempDir(), "finished")
+	if out, err := run(t, bin, state, path, "run", "--aria", "an", "--about", "the gate", "--", "sleep 3; touch "+marker); err != nil {
+		t.Fatalf("run: %v\n%s", err, out)
+	}
+	if out, err := run(t, bin, state, path, "arm", "--aria", "an", "--in", "1h", "--about", "the gate"); err != nil {
+		t.Fatalf("arm with a slug a run holds: %v\n%s", err, out)
+	} else if !strings.Contains(out, "an/the-gate-2") {
+		t.Fatalf("arm did not take the next free name:\n%s", out)
+	}
+	if out, err := run(t, bin, state, path, "arm", "--aria", "an", "--in", "1h", "--about", "x", "--name", "the-gate"); err == nil {
+		t.Fatalf("arm replaced a live run named explicitly:\n%s", out)
+	}
+	if out, err := run(t, bin, state, path, "run", "--aria", "an", "--name", "the-gate", "--", "true"); err == nil {
+		t.Fatalf("run replaced a live run named explicitly:\n%s", out)
+	}
+	waitSent(t, sent, "RUN DONE", 10*time.Second)
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal("the running command was killed")
+	}
+	if out, err := run(t, bin, state, path, "arm", "--aria", "an", "--in", "1h", "--about", "y", "--name", "the-gate"); err != nil {
+		t.Fatalf("a finished run's name stayed held: %v\n%s", err, out)
+	}
+}

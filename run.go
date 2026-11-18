@@ -48,9 +48,9 @@ func cmdRun(args []string) error {
 	if about == "" {
 		about = line
 	}
-	name := f["name"]
-	if name == "" {
-		name = slug(about)
+	name, err := freeName(aria, f["name"], about)
+	if err != nil {
+		return err
 	}
 	fig, err := exec.LookPath("figaro")
 	if err != nil {

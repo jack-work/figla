@@ -34,7 +34,7 @@ figla catchup
 for anything tied to the calendar (a kickoff, a deadline, a nightly job):
 computing `--in` by hand from the current time is arithmetic you can get wrong.
 
-Re-arming an existing `--name` replaces it.
+Re-arming an existing `--name` replaces it, unless that name is a `figla run` still running: an explicit `--name` is refused, and a name taken from `--about` gets the next free suffix (`-2`, `-3`).
 
 ## When you hand over a seat: `figla move`
 
